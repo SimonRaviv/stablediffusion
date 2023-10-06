@@ -9,7 +9,7 @@ https://github.com/CompVis/taming-transformers
 import torch
 import torch.nn as nn
 import numpy as np
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from torch.optim.lr_scheduler import LambdaLR
 from einops import rearrange, repeat
 from contextlib import contextmanager, nullcontext
@@ -17,7 +17,7 @@ from functools import partial
 import itertools
 from tqdm import tqdm
 from torchvision.utils import make_grid
-from pytorch_lightning.utilities.distributed import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import ListConfig
 
 from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config
@@ -815,7 +815,7 @@ class LatentDiffusion(DDPM):
         return out
 
     @torch.no_grad()
-    def decode_first_stage(self, z, predict_cids=False, force_not_quantize=False):
+    def decode_first_stage(self, z, predict_cids=False, force_not_quantize=False, get_features=False):
         if predict_cids:
             if z.dim() == 4:
                 z = torch.argmax(z.exp(), dim=1).long()
@@ -823,11 +823,11 @@ class LatentDiffusion(DDPM):
             z = rearrange(z, 'b h w c -> b c h w').contiguous()
 
         z = 1. / self.scale_factor * z
-        return self.first_stage_model.decode(z)
+        return self.first_stage_model.decode(z, get_features=get_features)
 
     @torch.no_grad()
-    def encode_first_stage(self, x):
-        return self.first_stage_model.encode(x)
+    def encode_first_stage(self, x, get_features=False):
+        return self.first_stage_model.encode(x, get_features=get_features)
 
     def shared_step(self, batch, **kwargs):
         x, c = self.get_input(batch, self.first_stage_key)
@@ -845,7 +845,7 @@ class LatentDiffusion(DDPM):
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
         return self.p_losses(x, c, t, *args, **kwargs)
 
-    def apply_model(self, x_noisy, t, cond, return_ids=False):
+    def apply_model(self, x_noisy, t, cond, return_ids=False, get_features=False):
         if isinstance(cond, dict):
             # hybrid case, cond is expected to be a dict
             pass
@@ -855,7 +855,7 @@ class LatentDiffusion(DDPM):
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
             cond = {key: cond}
 
-        x_recon = self.model(x_noisy, t, **cond)
+        x_recon = self.model(x_noisy, t, **cond, get_features=get_features)
 
         if isinstance(x_recon, tuple) and not return_ids:
             return x_recon[0]
@@ -880,10 +880,10 @@ class LatentDiffusion(DDPM):
         kl_prior = normal_kl(mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0)
         return mean_flat(kl_prior) / np.log(2.0)
 
-    def p_losses(self, x_start, cond, t, noise=None):
+    def p_losses(self, x_start, cond, t, noise=None, get_features=False):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        model_output = self.apply_model(x_noisy, t, cond)
+        model_output = self.apply_model(x_noisy, t, cond, get_features=get_features)
 
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
@@ -1315,12 +1315,12 @@ class DiffusionWrapper(pl.LightningModule):
         self.conditioning_key = conditioning_key
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm', 'crossattn-adm']
 
-    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, c_adm=None):
+    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, c_adm=None, get_features=False):
         if self.conditioning_key is None:
-            out = self.diffusion_model(x, t)
+            out = self.diffusion_model(x, t, get_features=get_features)
         elif self.conditioning_key == 'concat':
             xc = torch.cat([x] + c_concat, dim=1)
-            out = self.diffusion_model(xc, t)
+            out = self.diffusion_model(xc, t, get_features=get_features)
         elif self.conditioning_key == 'crossattn':
             if not self.sequential_cross_attn:
                 cc = torch.cat(c_crossattn, 1)
@@ -1332,27 +1332,31 @@ class DiffusionWrapper(pl.LightningModule):
                 # an error: RuntimeError: forward() is missing value for argument 'argument_3'.
                 out = self.scripted_diffusion_model(x, t, cc)
             else:
-                out = self.diffusion_model(x, t, context=cc)
+                out = self.diffusion_model(x, t, context=cc, get_features=get_features)
         elif self.conditioning_key == 'hybrid':
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(xc, t, context=cc)
+            out = self.diffusion_model(xc, t, context=cc, get_features=get_features)
         elif self.conditioning_key == 'hybrid-adm':
             assert c_adm is not None
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(xc, t, context=cc, y=c_adm)
+            out = self.diffusion_model(xc, t, context=cc, y=c_adm, get_features=get_features)
         elif self.conditioning_key == 'crossattn-adm':
             assert c_adm is not None
             cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(x, t, context=cc, y=c_adm)
+            out = self.diffusion_model(x, t, context=cc, y=c_adm, get_features=get_features)
         elif self.conditioning_key == 'adm':
             cc = c_crossattn[0]
-            out = self.diffusion_model(x, t, y=cc)
+            out = self.diffusion_model(x, t, y=cc, get_features=get_features)
         else:
             raise NotImplementedError()
 
-        return out
+        if get_features is True:
+            out, features = out
+            return out, features
+        else:
+            return out
 
 
 class LatentUpscaleDiffusion(LatentDiffusion):

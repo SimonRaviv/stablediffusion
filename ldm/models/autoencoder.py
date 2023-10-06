@@ -1,5 +1,5 @@
 import torch
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch.nn.functional as F
 from contextlib import contextmanager
 
@@ -79,16 +79,28 @@ class AutoencoderKL(pl.LightningModule):
         if self.use_ema:
             self.model_ema(self)
 
-    def encode(self, x):
-        h = self.encoder(x)
+    def encode(self, x, get_features=False):
+        h = self.encoder(x, get_features=get_features)
+        h, features = (h[0], h[1]) if get_features is True else (h, None)
         moments = self.quant_conv(h)
         posterior = DiagonalGaussianDistribution(moments)
-        return posterior
+        if get_features is True:
+            features = [x] + features
+            features.append(moments)
+            features.append(posterior)
+            return posterior, features
+        else:
+            return posterior
 
-    def decode(self, z):
+    def decode(self, z, get_features=False):
+        features = []
         z = self.post_quant_conv(z)
-        dec = self.decoder(z)
-        return dec
+        dec = self.decoder(z, get_features=get_features)
+        dec, features = (dec[0], dec[1]) if get_features is True else (dec, None)
+        if get_features is True:
+            return dec, features
+        else:
+            return dec
 
     def forward(self, input, sample_posterior=True):
         posterior = self.encode(input)

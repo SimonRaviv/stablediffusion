@@ -509,38 +509,56 @@ class Encoder(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in)
+        self.nonlinearity = torch.nn.SiLU() # swish, just for the print of the model, not used.
         self.conv_out = torch.nn.Conv2d(block_in,
                                         2*z_channels if double_z else z_channels,
                                         kernel_size=3,
                                         stride=1,
                                         padding=1)
 
-    def forward(self, x):
+    def forward(self, x, get_features=False):
         # timestep embedding
         temb = None
+        features = []
 
         # downsampling
         hs = [self.conv_in(x)]
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
                 h = self.down[i_level].block[i_block](hs[-1], temb)
+                hs.append(h)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
-                hs.append(h)
+                    hs.append(h)
             if i_level != self.num_resolutions-1:
                 hs.append(self.down[i_level].downsample(hs[-1]))
+
+        features.extend(hs)
 
         # middle
         h = hs[-1]
         h = self.mid.block_1(h, temb)
+        features.append(h)
         h = self.mid.attn_1(h)
+        features.append(h)
+
         h = self.mid.block_2(h, temb)
+        features.append(h)
 
         # end
         h = self.norm_out(h)
+        features.append(h)
+
         h = nonlinearity(h)
+        features.append(h)
+
         h = self.conv_out(h)
-        return h
+        features.append(h)
+
+        if get_features is True:
+            return h, features
+        else:
+            return h
 
 
 class Decoder(nn.Module):
@@ -616,7 +634,8 @@ class Decoder(nn.Module):
                                         stride=1,
                                         padding=1)
 
-    def forward(self, z):
+    def forward(self, z, get_features=False):
+        features = [z]
         #assert z.shape[1:] == self.z_shape[1:]
         self.last_z_shape = z.shape
 
@@ -625,31 +644,49 @@ class Decoder(nn.Module):
 
         # z to block_in
         h = self.conv_in(z)
+        features.append(h)
 
         # middle
         h = self.mid.block_1(h, temb)
+        features.append(h)
         h = self.mid.attn_1(h)
+        features.append(h)
         h = self.mid.block_2(h, temb)
+        features.append(h)
 
         # upsampling
         for i_level in reversed(range(self.num_resolutions)):
             for i_block in range(self.num_res_blocks+1):
                 h = self.up[i_level].block[i_block](h, temb)
+                features.append(h)
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
+                    features.append(h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
+                features.append(h)
 
         # end
         if self.give_pre_end:
-            return h
+            if get_features is True:
+                return h, features
+            else:
+                return h
 
         h = self.norm_out(h)
+        features.append(h)
         h = nonlinearity(h)
+        features.append(h)
         h = self.conv_out(h)
+        features.append(h)
         if self.tanh_out:
             h = torch.tanh(h)
-        return h
+            features.append(h)
+
+        if get_features is True:
+            return h, features
+        else:
+            return h
 
 
 class SimpleDecoder(nn.Module):

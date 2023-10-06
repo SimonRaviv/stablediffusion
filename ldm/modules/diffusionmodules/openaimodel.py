@@ -784,6 +784,7 @@ class UNetModel(nn.Module):
         assert (y is not None) == (
             self.num_classes is not None
         ), "must specify y if and only if the model is class-conditional"
+        features = []
         hs = []
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
         emb = self.time_embed(t_emb)
@@ -792,16 +793,32 @@ class UNetModel(nn.Module):
             assert y.shape[0] == x.shape[0]
             emb = emb + self.label_emb(y)
 
-        h = x.type(self.dtype)
+        # h = x.type(self.dtype)
+        h = x
         for module in self.input_blocks:
             h = module(h, emb, context)
             hs.append(h)
+
+        if "get_features" in kwargs and kwargs["get_features"] is True:
+            features = hs
+
         h = self.middle_block(h, emb, context)
+        if "get_features" in kwargs and kwargs["get_features"] is True:
+            features.append(h)
+
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb, context)
+            if "get_features" in kwargs and kwargs["get_features"] is True:
+                features.append(h)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
-            return self.id_predictor(h)
+            if "get_features" in kwargs and kwargs["get_features"] is True:
+                return self.id_predictor(h), features
+            else:
+                return self.id_predictor(h)
         else:
-            return self.out(h)
+            if "get_features" in kwargs and kwargs["get_features"] is True:
+                return self.out(h), features
+            else:
+                return self.out(h)

@@ -12,7 +12,7 @@ from einops import rearrange, repeat
 from torchvision.utils import make_grid
 from torch import autocast
 from contextlib import nullcontext
-from pytorch_lightning import seed_everything
+from lightning.pytorch import seed_everything
 from imwatermark import WatermarkEncoder
 
 
@@ -46,12 +46,21 @@ def load_model_from_config(config, ckpt, verbose=False):
     return model
 
 
-def load_img(path):
+def load_img(path, resize_dim=512):
     image = Image.open(path).convert("RGB")
     w, h = image.size
     print(f"loaded input image of size ({w}, {h}) from {path}")
     w, h = map(lambda x: x - x % 64, (w, h))  # resize to integer multiple of 64
-    image = image.resize((w, h), resample=PIL.Image.LANCZOS)
+
+    if w != resize_dim or h != resize_dim:
+        print(f"resizing image to ({resize_dim}, {resize_dim})")
+        image = image.resize((resize_dim, resize_dim), resample=PIL.Image.LANCZOS)
+        w, h = image.size
+        image.save(f"{path}.resized.png")
+
+    w, h = map(lambda x: x - x % 64, (w, h))  # resize to integer multiple of 64
+
+    image = image.resize((w, h))
     image = np.array(image).astype(np.float32) / 255.0
     image = image[None].transpose(0, 3, 1, 2)
     image = torch.from_numpy(image)

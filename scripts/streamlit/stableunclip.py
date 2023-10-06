@@ -11,7 +11,7 @@ import io, os
 from torch import autocast
 from einops import rearrange, repeat
 from torchvision.utils import make_grid
-from pytorch_lightning import seed_everything
+from lightning.pytorch import seed_everything
 from contextlib import nullcontext
 
 from ldm.models.diffusion.ddim import DDIMSampler
