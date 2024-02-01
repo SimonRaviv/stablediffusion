@@ -834,8 +834,13 @@ class LatentDiffusion(DDPM):
         loss = self(x, c)
         return loss
 
-    def forward(self, x, c, *args, **kwargs):
-        t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
+    def forward(self, x, c, t=None, *args, **kwargs):
+        if t is not None:
+            zeroes = torch.zeros((x.shape[0],), device=self.device).long()
+            t = torch.where(t == 0, zeroes, t)
+        else:
+            t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
+
         if self.model.conditioning_key is not None:
             assert c is not None
             if self.cond_stage_trainable:
@@ -856,11 +861,18 @@ class LatentDiffusion(DDPM):
             cond = {key: cond}
 
         x_recon = self.model(x_noisy, t, **cond, get_features=get_features)
+        features = x_recon[1] if get_features is True else None
 
         if isinstance(x_recon, tuple) and not return_ids:
-            return x_recon[0]
+            if get_features is True:
+                return x_recon[0], features
+            else:
+                return x_recon[0]
         else:
-            return x_recon
+            if get_features is True:
+                return x_recon, features
+            else:
+                return x_recon
 
     def _predict_eps_from_xstart(self, x_t, t, pred_xstart):
         return (extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t - pred_xstart) / \
@@ -884,6 +896,8 @@ class LatentDiffusion(DDPM):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_output = self.apply_model(x_noisy, t, cond, get_features=get_features)
+        features = model_output[1] if get_features is True else None
+        model_output = model_output[0]
 
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
@@ -915,7 +929,10 @@ class LatentDiffusion(DDPM):
         loss += (self.original_elbo_weight * loss_vlb)
         loss_dict.update({f'{prefix}/loss': loss})
 
-        return loss, loss_dict
+        if get_features is True:
+            return loss, loss_dict, features
+        else:
+            return loss, loss_dict
 
     def p_mean_variance(self, x, c, t, clip_denoised: bool, return_codebook_ids=False, quantize_denoised=False,
                         return_x0=False, score_corrector=None, corrector_kwargs=None):
