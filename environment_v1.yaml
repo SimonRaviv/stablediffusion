@@ -56,6 +56,7 @@ dependencies:
     - scikit-learn==1.2.0
     - scipy==1.10.1
     - wandb==0.15.11
+    - lpips==0.1.4
     - tqdm==4.65.0
     - seaborn==0.12.2
     - prettytable==3.6.0
